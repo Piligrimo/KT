@@ -1,0 +1,175 @@
+from django.contrib.auth.decorators import login_required
+import json
+
+from django.contrib.auth.hashers import make_password
+from django.contrib.auth.models import AnonymousUser
+from django.core import serializers
+from django.forms import model_to_dict
+from django.http import HttpResponse, JsonResponse
+from django.shortcuts import render, redirect
+from django.contrib.auth import authenticate, login, logout
+from django.views import View
+
+from .forms import *
+
+class IndexView(View):
+    def get(self, request):
+        ques_form = QuestionForm(initial={'title': 'Заголовок', 'text': 'Текст'})
+        title = 'TeeAsk'
+        posts = Post.objects.order_by('-id')[:4];
+        likes = None
+        if request.user.is_authenticated:#  is not None or request.user is not AnonymousUser:
+            liked_posts = Like.objects.filter(user=request).values_list("post")
+            likes = Like.objects.filter(user=request.user)
+        return render(request, 'index.html', locals())
+    def post(self, request):
+        print(1)
+        title = request.POST.get('title')
+        text = request.POST.get('text')
+        post = Post.objects.create(author=Profile.objects.get(username=request.user))
+        post.title = title
+        post.text = text
+        post.save()
+        return redirect('/', request.user)
+
+class LoadView(View):
+    def get(self, request):
+        start = (int)(request.GET.get('start'))
+        posts = Post.objects.order_by('-id')
+        users = []
+        res = posts[start:start+4]
+        for r in res:
+            p = Post.objects.get(id = r.author.id)
+            users.append({'text':p.text,'title':p.title, 'author':p.author.username, 'id':p.id, 'avatar':p.author.avatar.url})
+        return HttpResponse(json.dumps(users), content_type='application/json')
+
+class UserPosts(View):
+    def get(self, request, id):
+        title = 'TeeAsk'
+        post = Post.objects.get(id=id)
+        posts = Post.objects.filter(author=post.author)
+        return render(request, 'index.html', locals())
+
+class RegisterView(View):
+    def get(self, request):
+        reg_form = RegistrationForm(request.POST or None)
+        title = 'Картонный Творог'
+        return render(request, 'register.html', locals())
+
+    def post(self, request):
+        reg_form = RegistrationForm(request.POST or None)
+        if reg_form.is_valid():
+            user = Profile.objects.create(email=reg_form.cleaned_data["email"],
+                                          username=reg_form.cleaned_data["username"])
+            user.set_password(reg_form.cleaned_data["password"])
+            user.save()
+
+            return render(request, 'index.html', locals())
+
+class LoginView(View):
+    def get(self, request):
+        title = 'Картонный Творог'
+        login_form = LoginForm(request.POST or None)
+        return render(request, 'login.html', locals())
+
+    def post(self, request):
+        login_form = LoginForm(request.POST or None)
+        if login_form.is_valid():
+            print(1)
+            user = authenticate(username=login_form.cleaned_data["username"], password=login_form.cleaned_data["password"])
+            if user is not None:
+                login(request, user)
+                return redirect('/', user)
+            else:
+                error = "Неверный логин или пароль"
+                return render(request, 'login.html', locals())
+
+class SettingsView(View):
+    def post(self, request):
+        form = AvatarForm(request.POST, request.FILES)
+        if form.is_valid():
+            user = Profile.objects.get(username = request.user.username)
+            print(form.cleaned_data)
+            user.avatar = form.cleaned_data['avatar']
+            user.save()
+        return render(request, 'index.html', locals())
+
+class LogoutView(View):
+    def get(self, request):
+        logout(request)
+        return redirect('/', {})
+
+class QuestionView(View):
+    def get(self, request, num):
+        post_id = num
+        post = Post.objects.get(id=post_id)
+
+        answer_form = AnswerForm(request.POST or None)
+
+        try:
+            answers = Answer.objects.filter(post=post)
+        except Answer.DoesNotExist:
+            answers = None
+
+        if request.method == 'POST':
+            if answer_form.is_valid():
+                answer = Answer.objects.create(author=request.user, post=post)
+                answer.text = answer_form.cleaned_data['text']
+                answer.save()
+            else:
+                print(answer_form.errors)
+                print('en')
+
+        return render(request, 'question.html', locals())
+
+class NewQuestionView(View):
+    def get(self, request):
+        print('HERE')
+
+        ques_form = QuestionForm(initial={'title': 'Заголовок', 'text': 'Текст'})
+        if request.user is None:
+            return redirect('/', {})
+
+        if request.method == 'POST':
+            print(2)
+            title = request.POST.get('title')
+            text = request.POST.get('text')
+            post = Post.objects.create(author=Profile.objects.get(username=request.user))
+            post.title = title
+            post.text = text
+            post.save()
+            return redirect('/', request.user)
+
+        return render(request, 'new_question.html', locals())
+
+
+class LiveView(View):
+    def get(self, request):
+        id = request.GET['id']
+        value = request.GET['value']
+        new_like, created = Like.objects.get_or_create(user=request.user, post=Post.objects.get(id=id))
+        post = Post.objects.get(id=id)
+        if not created:
+            like = Like.objects.get(user=request.user, post=post)
+            if int(like.value) != int(value):
+                if int(value) > 0:
+                    post.likes += 2
+                else:
+                    post.likes -= 2
+                like.value = value
+                like.save()
+                post.save()
+            else:
+                if(int)(value) > 0:
+                    post.likes -= 1
+                else:
+                    post.likes += 1
+                like.delete()
+        else:
+            new_like.value = value
+            new_like.save()
+            post.likes += int(value)
+            post.save()
+        likes_count = post.likes
+        ctx = {'id': id, 'like': likes_count}
+        return HttpResponse(json.dumps(ctx), content_type='application/json')
